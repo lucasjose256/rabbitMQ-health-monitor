@@ -1,23 +1,51 @@
 import pika
 import json
-import random
 import time
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives import serialization
 
-EXCHANGE_NAME = 'health_exchange'
+EXCHANGE_NAME = 'sensor_exchange'
 
-def publish_heartbeat():
-    connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-    channel = connection.channel()
-    channel.exchange_declare(exchange=EXCHANGE_NAME, exchange_type='topic')
+private_key = rsa.generate_private_key(
+    public_exponent=65537,
+    key_size=2048,
+)
+public_key = private_key.public_key()
 
-    while True:
-        heartbeat = random.randint(50, 150)
-        message = json.dumps({"device_id": 1, "heartbeat": heartbeat})
-        channel.basic_publish(exchange=EXCHANGE_NAME, routing_key="health.heartbeat", body=message)
-        print(" [x] Enviou batimentos cardíacos:", message)
-        time.sleep(5)
+public_pem = public_key.public_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PublicFormat.SubjectPublicKeyInfo
+).decode()
 
-    connection.close()
 
-if __name__ == "__main__":
-    publish_heartbeat()
+def sign_message(message):
+    signature = private_key.sign(
+        message.encode(),
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH
+        ),
+        hashes.SHA256()
+    )
+    return signature
+
+
+connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
+channel = connection.channel()
+channel.exchange_declare(exchange=EXCHANGE_NAME, exchange_type='topic')
+
+while True:
+    heartbeat = int(input("Digite o valor do batimento cardíaco: "))
+    message = json.dumps({"device_id": 1, "heartbeat": heartbeat, "timestamp": time.time()})
+
+    signature = sign_message(message).hex()
+    signed_message = json.dumps({
+        "message": message,
+        "signature": signature,
+        "public_key": public_pem
+    })
+
+    channel.basic_publish(exchange=EXCHANGE_NAME, routing_key="health.heartbeat", body=signed_message)
+    print(" [x] Enviou batimentos cardíacos:", signed_message)
+    time.sleep(5)
